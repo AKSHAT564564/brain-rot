@@ -1,0 +1,41 @@
+# --- Secrets (never commit) ---
+.env
+*.env
+!.env.example
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+
+# --- macOS ---
+.DS_Store
+
+# --- Generated pipeline output ---
+# per-project assets (script, narration, images, final.mp4); keep the empty folder
+projects/*
+!projects/.gitkeep
+# scratch pipeline output
+out/
+# top-level render
+final.mp4
+# POC output (mp3s, results.json, index.html)
+hinglish_poc/
+*.log
+
+# --- Media libraries (large binaries; keep the docs / placeholder) ---
+footage/*
+!footage/.gitkeep
+music/*
+!music/README.md
+!music/.gitkeep
+
+# --- Editor / misc ---
+.idea/
+.vscode/
+*.swp
