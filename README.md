@@ -16,18 +16,47 @@ story/article ─▶ script.json ─▶ narration.mp3 ─▶ images/*.png ─▶
 
 ## Setup
 
-    pip install edge-tts whisperx          # whisperx optional (English caption sync)
-    brew install ffmpeg-full               # ffmpeg WITH libass (needed for captions)
-    cp .env.example .env                   # then fill in the keys
+Runs on **macOS, Windows, and Linux** (Python 3.10+). Create a virtualenv, install
+the Python deps, install an ffmpeg that has libass, then fill in `.env`.
+
+**1. Python deps** (all platforms):
+
+    python -m venv .venv
+    # macOS/Linux:  source .venv/bin/activate
+    # Windows:      .venv\Scripts\activate
+    pip install edge-tts whisperx          # whisperx optional (English caption fallback)
+
+**2. ffmpeg *with libass*** (needed to burn captions):
+
+| OS | Install |
+|----|---------|
+| macOS | `brew install ffmpeg-full` (the stock `ffmpeg` bottle has **no** libass) |
+| Windows | Download the **full** build from gyan.dev or BtbN, unzip, add its `bin\` to `PATH` (these include libass), or set `FFMPEG_BIN=C:\path\to\ffmpeg.exe` |
+| Linux | `sudo apt install ffmpeg` (Debian/Ubuntu builds include libass) |
+
+**3. Keys:** `cp .env.example .env` (Windows: `copy .env.example .env`), then fill it in.
 
 Script generation has three providers (pick per project in the UI):
 - **Claude Code (subscription)** — default; runs the local `claude` CLI headless,
-  so it uses your Claude Code login and needs **no API key**.
+  so it uses your Claude Code login and needs **no API key**. Requires
+  [Claude Code](https://claude.com/claude-code) installed with `claude` on `PATH`
+  (works on macOS/Windows/Linux). Or switch to an API provider below.
 - **Claude API** — needs `ANTHROPIC_API_KEY`.
 - **Gemini API** — needs `GEMINI_API_KEY`.
 
 `.env` keys: `ANTHROPIC_API_KEY` and/or `GEMINI_API_KEY` (only for the API
-providers), `CF_ACCOUNT_ID` + `CF_API_TOKEN` (images).
+providers), `CF_ACCOUNT_ID` + `CF_API_TOKEN` (images), and `HF_TOKEN` (only if you
+use the local Indic-Parler TTS engine — see below).
+
+**Optional — local Hinglish TTS (Indic-Parler):** for higher-quality Hinglish
+narration than edge-tts, install the ML stack and authenticate with Hugging Face:
+
+    pip install torch transformers soundfile git+https://github.com/huggingface/parler-tts.git
+
+Then request access to the (free) gated model at
+<https://huggingface.co/ai4bharat/indic-parler-tts> and add `HF_TOKEN=hf_…` to
+`.env`. It auto-uses CUDA (NVIDIA) → MPS (Apple Silicon) → CPU. First run downloads
+~2–3 GB. Skip all of this to just use edge-tts (the default, no extra deps).
 
 ## The UI (recommended)
 
@@ -42,8 +71,11 @@ providers), `CF_ACCOUNT_ID` + `CF_API_TOKEN` (images).
 - **Language** (Plan card): English or **Hinglish** — Hinglish writes mixed
   Devanagari+English narration (~120 wpm) and captions auto-switch to a
   Devanagari font; Hinglish projects default the voice to a Hindi voice.
-- **Voice**: dropdown of edge-tts voices (English first, then Hindi) with a
-  **▶ Preview** button to audition before committing. Rate / pitch / volume faders.
+- **Narrate card — Engine**: **edge-tts** (default, fast, cloud) or **Indic-Parler**
+  (local, purpose-built for Hinglish, slower). For edge-tts: a voice dropdown
+  (English first, then Hindi), a **▶ Preview** button, and rate/pitch/volume faders.
+  For Indic-Parler: pick a **Speaker** (Divya/Rani female, Rohit/Aman male) — the
+  emotion is set automatically from the story's `tone`.
 - **Assemble card**: pick **Gameplay** (Random or a specific clip from `footage/`)
   and **Music** (None / Random / a track from `music/`, ducked under narration).
 
@@ -71,7 +103,8 @@ providers), `CF_ACCOUNT_ID` + `CF_API_TOKEN` (images).
 
     python plan.py     --context context.txt --seconds 60 [--language english|hinglish] \
                        [--guidance "tone/POV"] [--provider claude-cli|claude|gemini] --out out/script.json
-    python narrate.py  --script out/script.json --voice hi-IN-MadhurNeural \
+    python narrate.py  --script out/script.json [--provider edge|indic-parler] \
+                       --voice hi-IN-MadhurNeural [--speaker Divya] \
                        --out-mp3 out/narration.mp3 --out-words out/narration.words.json
     python generate_images.py --script out/script.json --out out/images --provider cloudflare
     python metadata.py --script out/script.json --out out/metadata.json
@@ -94,13 +127,26 @@ whisperx remains available as a fallback (`assemble.py` uses it only when no
 timings are supplied). The alignment order is: `--timings` (if non-empty) →
 whisperx → proportional.
 
-**Hinglish captions:** `DejaVu Sans` can't render Devanagari, so `assemble.py`
-detects Devanagari in the caption text and switches to **Kohinoor Devanagari** (a
-macOS system font that covers Devanagari + Latin, so mixed Hinglish renders in one
-style). Override with `--font "<name>"`.
+**Hinglish captions:** the default Latin font can't render Devanagari, so
+`assemble.py` detects Devanagari in the caption text and switches to a bundled
+OS font that covers Devanagari + Latin: **Kohinoor Devanagari** (macOS),
+**Nirmala UI** (Windows), or **Noto Sans Devanagari** (Linux — `apt install
+fonts-noto-devanagari` if missing). Override with `--font "<name>"`.
+
+**TTS engines:** `edge-tts` (default) is fast and cloud-based. **Indic-Parler**
+(`--provider indic-parler`) runs locally and sounds markedly more natural on
+Hinglish; it composes its voice from the `--speaker` and the story's `tone`, emits
+no word timings (captions fall back to proportional), and needs the optional ML
+deps + `HF_TOKEN` from Setup.
 
 ## Customizing narration
 
 The output *structure* is fixed by `story-to-shotlist-prompt.md` (sent to Claude
 verbatim). To steer tone/POV/emphasis without changing structure, use the
 **Narration guidance** field in the UI (or `--guidance` on `plan.py`).
+
+**India localization:** the planner localizes culturally-specific references for an
+Indian audience — currency in ₹, brands/stores swapped for Indian equivalents
+(Walmart → DMart/Reliance, etc.) — without falsifying real documented facts, names,
+or figures. It's part of `story-to-shotlist-prompt.md`, so it applies to every new
+`script.json` (re-run Plan on old projects to pick it up).

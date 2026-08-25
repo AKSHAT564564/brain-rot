@@ -57,6 +57,66 @@ def build_user(context: str, seconds: int, guidance: str, language: str) -> str:
     return user
 
 
+def load_episode(bible_path: str, index: int):
+    """Load series.json and return (bible, episode). 1-based index."""
+    bible = json.loads(Path(bible_path).read_text())
+    eps = bible.get("episodes") or []
+    if not (1 <= index <= len(eps)):
+        sys.exit(f"--episode {index} out of range (series has {len(eps)} episodes)")
+    return bible, eps[index - 1]
+
+
+def build_episode_user(bible: dict, ep: dict, guidance: str, language: str) -> str:
+    """User turn for Story Mode: this episode's segment plus the continuity the
+    system prompt can't know - series position, recap, cliffhanger, and the
+    locked look. The structure still comes from story-to-shotlist-prompt.md."""
+    n, total = ep["index"], len(bible["episodes"])
+    L = [f"Language: {language}",
+         f"Target duration: {ep['target_seconds']} seconds.",
+         "",
+         f'This is Episode {n} of {total} in a series titled "{bible["series_title"]}".']
+    if bible.get("tone"):
+        L.append(f"Series tone: {bible['tone']}.")
+
+    if ep.get("recap_hint"):
+        L += ["",
+              "The FIRST beat is a ~2-second cold re-entry for viewers who missed "
+              f'earlier parts, reminding them of: "{ep["recap_hint"]}". Keep it to '
+              'one short beat and tag that beat with "role": "recap".']
+    else:
+        L += ["", "This is the first episode - no recap. The opening line is the "
+                  "strongest hook of the whole series."]
+
+    if ep.get("cliffhanger"):
+        L += ["",
+              "The FINAL beat lands this cliffhanger so it pulls the viewer to the "
+              f'next episode: "{ep["cliffhanger"]}". Tag that final beat with '
+              '"role": "cliffhanger".']
+    else:
+        L += ["", "This is the final episode - no cliffhanger. End on the series "
+                  "payoff; resolve, do not tease."]
+
+    L += ["",
+          "Use this EXACT style_block verbatim in every image prompt - do not invent "
+          "a new look:",
+          bible["style_block"]]
+    if bible.get("characters"):
+        L += ["",
+              "Recurring characters - use these exact descriptions verbatim wherever "
+              "they appear:",
+              json.dumps(bible["characters"], ensure_ascii=False)]
+
+    if guidance.strip():
+        L += ["", "Extra narration guidance (tone/POV/emphasis only - keep the "
+                  f"required JSON structure exactly):\n{guidance.strip()}"]
+
+    L += ["",
+          "Context - this episode's portion of the story. Stay strictly inside it, "
+          "invent nothing:",
+          ep["segment"].strip()]
+    return "\n".join(L)
+
+
 def _post(url, payload, headers, label) -> dict:
     req = urllib.request.Request(url, data=json.dumps(payload).encode(),
                                  headers={"content-type": "application/json", **headers})
@@ -217,7 +277,10 @@ def validate(spec: dict):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--context", required=True, help="path to the raw story/article text")
+    ap.add_argument("--context", help="path to the raw story/article text "
+                    "(omit when using --bible/--episode)")
+    ap.add_argument("--bible", help="series.json from series.py (Story Mode)")
+    ap.add_argument("--episode", type=int, help="1-based episode index within --bible")
     ap.add_argument("--seconds", type=int, default=60, help="target duration")
     ap.add_argument("--guidance", default="", help="optional narration tone/POV guidance")
     ap.add_argument("--language", default="english",
@@ -236,21 +299,50 @@ def main():
         sys.exit(f"system prompt not found: {PROMPT_FILE}")
     system = PROMPT_FILE.read_text()
 
-    ctx_path = Path(args.context)
-    if not ctx_path.exists():
-        sys.exit(f"context file not found: {ctx_path}")
-    context = ctx_path.read_text()
-    if not context.strip():
-        sys.exit("context file is empty")
+    # Two modes: a standalone short (--context) or one episode of a series
+    # (--bible --episode). Episode mode takes its context, language, duration and
+    # look from the series bible so every episode stays consistent.
+    bible = ep = None
+    if args.bible or args.episode:
+        if not (args.bible and args.episode):
+            sys.exit("--bible and --episode must be used together")
+        bible, ep = load_episode(args.bible, args.episode)
+        language = bible.get("language", args.language)
+        seconds = ep["target_seconds"]
+        user = build_episode_user(bible, ep, args.guidance, language)
+        label = f"episode {ep['index']}/{len(bible['episodes'])}"
+    else:
+        if not args.context:
+            sys.exit("give --context (standalone) or --bible + --episode (series)")
+        ctx_path = Path(args.context)
+        if not ctx_path.exists():
+            sys.exit(f"context file not found: {ctx_path}")
+        context = ctx_path.read_text()
+        if not context.strip():
+            sys.exit("context file is empty")
+        language, seconds = args.language, args.seconds
+        user = build_user(context, seconds, args.guidance, language)
+        label = "standalone"
 
     model = args.model or DEFAULT_MODEL[args.provider]
-    user = build_user(context, args.seconds, args.guidance, args.language)
-    print(f"planning: {args.seconds}s | {args.language} | "
+    print(f"planning: {label} | {seconds}s | {language} | "
           f"provider={args.provider} | model={model}", file=sys.stderr)
     caller = {"gemini": call_gemini, "claude-cli": call_claude_cli}.get(
         args.provider, call_claude)
     text = caller(system, user, model)
     spec = parse_json(text)
+
+    # In episode mode, lock the shared identity deterministically rather than
+    # trusting the model to echo it verbatim - this is what keeps episodes
+    # visually consistent regardless of model drift.
+    if bible:
+        spec["style_block"] = bible["style_block"]
+        if bible.get("characters"):
+            spec["characters"] = bible["characters"]
+        spec["language"] = language
+        spec["seed"] = bible["seed"]        # generate_images.py picks this up
+        spec["series"] = {"title": bible["series_title"], "index": ep["index"],
+                          "total": len(bible["episodes"])}
 
     n_imgs = assign_images(spec)
     validate(spec)
