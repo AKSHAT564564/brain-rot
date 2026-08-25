@@ -57,8 +57,20 @@ def gen_cloudflare(prompt, seed, size, steps=4):
 
     url = (f"https://api.cloudflare.com/client/v4/accounts/{acct}"
            f"/ai/run/@cf/black-forest-labs/flux-1-schnell")
-    data = post_json(url, {"prompt": prompt, "steps": steps, "seed": seed},
-                     {"Authorization": f"Bearer {token}"})
+    payload = {"prompt": prompt, "steps": steps, "seed": seed}
+    hdr = {"Authorization": f"Bearer {token}"}
+    try:
+        data = post_json(url, payload, hdr)
+    except urllib.error.HTTPError as e:
+        # Cloudflare tightened the FLUX schema and now rejects unknown props
+        # like 'seed'. Reproducibility is lost for this provider, but retry
+        # without it rather than failing the whole run.
+        body = e.read()[:300].decode(errors="replace")
+        if e.code == 400 and "seed" in body:
+            payload.pop("seed", None)
+            data = post_json(url, payload, hdr)
+        else:
+            raise
 
     if not data.get("success", True):
         raise RuntimeError(str(data.get("errors") or data))
@@ -185,7 +197,15 @@ def main():
         return
 
     spec = json.loads(Path(args.script).read_text())
-    seed = args.seed if args.seed is not None else seed_for(spec.get("title", "untitled"))
+    # Precedence: --seed override > a seed embedded in the script (Story Mode
+    # writes the shared series seed here so episodes render in one family) >
+    # a stable seed derived from the title.
+    if args.seed is not None:
+        seed = args.seed
+    elif isinstance(spec.get("seed"), int):
+        seed = spec["seed"]
+    else:
+        seed = seed_for(spec.get("title", "untitled"))
     jobs = collect(spec)
 
     outdir = Path(args.out)

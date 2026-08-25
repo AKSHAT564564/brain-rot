@@ -97,8 +97,12 @@ def resolve_ffmpeg():
         seen.add(resolved)
         if _has_ass_filter(resolved):
             FFMPEG = resolved
-            probe = Path(resolved).with_name("ffprobe")   # match the build
-            FFPROBE = str(probe) if probe.exists() else "ffprobe"
+            # match the ffprobe from the same build (ffprobe.exe on Windows)
+            sib = Path(resolved)
+            probe = next((p for p in (sib.with_name("ffprobe"),
+                                      sib.with_name("ffprobe.exe"))
+                          if p.exists()), None)
+            FFPROBE = str(probe) if probe else "ffprobe"
             return FFMPEG, FFPROBE
     sys.exit(
         "no ffmpeg with libass (the 'ass' subtitle filter) was found, so captions\n"
@@ -262,10 +266,22 @@ def build_gameplay(folder: Path, total: float, out: Path, seed=None, clip=None):
 # ---------------------------------------------------------------------------
 
 # DejaVu Sans has no Devanagari glyphs, so Hinglish captions render as tofu
-# boxes with it. Kohinoor Devanagari (a macOS system font) covers Devanagari and
-# Latin, so it handles mixed-script Hinglish in one style.
-LATIN_FONT = "DejaVu Sans"
-DEVANAGARI_FONT = "Kohinoor Devanagari"
+# boxes with it. We pick a font that ships with the host OS and covers both
+# Devanagari and Latin, so mixed-script Hinglish renders in one style. Override
+# either with --font (the family name must be installed and known to libass).
+import platform as _platform
+
+_SYS = _platform.system()
+if _SYS == "Windows":
+    # Nirmala UI ships with Windows and covers Devanagari + Latin.
+    LATIN_FONT = "Arial"
+    DEVANAGARI_FONT = "Nirmala UI"
+elif _SYS == "Darwin":
+    LATIN_FONT = "DejaVu Sans"
+    DEVANAGARI_FONT = "Kohinoor Devanagari"
+else:  # Linux and everything else
+    LATIN_FONT = "DejaVu Sans"
+    DEVANAGARI_FONT = "Noto Sans Devanagari"
 
 
 def has_devanagari(words) -> bool:
